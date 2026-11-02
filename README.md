@@ -28,3 +28,7 @@ npm run dev
 - Hız sınırı bellek içidir; birden fazla sunucuda Redis gibi ortak bir depoya taşı.
 
 Liquid glass kırılma kodu, MIT lisanslı liquid-glass-js (Armagan Amcalar) üzerinden uyarlanmıştır; notu `components/Glass.jsx` başında durur.
+
+## Lisans
+
+MIT. Ayrıntı için `LICENSE` dosyasına bak.
