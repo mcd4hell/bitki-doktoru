@@ -1,8 +1,14 @@
 import { HASTALIKLAR } from "@/lib/hastaliklar";
 
 // Ücretsiz katman: https://aistudio.google.com/apikey (kredi kartı gerekmez).
-// Model adı değişirse GEMINI_MODEL ile geçersiz kıl.
-const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+// Sürüm numarası yerine "-latest" takma adları: Google modelleri sık emekliye ayırıyor.
+// GEMINI_MODEL verilirse önce o denenir.
+const MODELLER = [
+  process.env.GEMINI_MODEL,
+  "gemini-flash-latest",
+  "gemini-3.1-flash-lite",
+  "gemini-flash-lite-latest",
+].filter(Boolean);
 const MAX_BYTES = 5 * 1024 * 1024;
 const IZINLI_TIPLER = ["image/jpeg", "image/png", "image/webp"];
 
@@ -111,34 +117,47 @@ export async function POST(request) {
 
   const base64 = Buffer.from(await dosya.arrayBuffer()).toString("base64");
 
-  let yanit;
-  try {
-    yanit = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-goog-api-key": anahtar },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SISTEM }] },
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { inline_data: { mime_type: dosya.type, data: base64 } },
-              { text: "Bu bitkinin yaprağında/gövdesinde ne sorun var? Şemaya uygun JSON döndür." },
-            ],
-          },
+  const govdeJson = JSON.stringify({
+    systemInstruction: { parts: [{ text: SISTEM }] },
+    contents: [
+      {
+        role: "user",
+        parts: [
+          { inline_data: { mime_type: dosya.type, data: base64 } },
+          { text: "Bu bitkinin yaprağında/gövdesinde ne sorun var? Şemaya uygun JSON döndür." },
         ],
-        generationConfig: { responseMimeType: "application/json", maxOutputTokens: 1500, temperature: 0.3 },
-      }),
-      signal: AbortSignal.timeout(45_000),
-    });
-  } catch {
-    return hata("Teşhis servisine ulaşılamadı. Tekrar dene.", 502);
+      },
+    ],
+    generationConfig: { responseMimeType: "application/json", maxOutputTokens: 1500, temperature: 0.3 },
+  });
+
+  // Model yoğunsa (503), kota doluysa (429) ya da emekliye ayrıldıysa (404) sıradakine geç.
+  let yanit = null;
+  let kotaDolu = false;
+  for (const model of MODELLER) {
+    try {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-goog-api-key": anahtar },
+        body: govdeJson,
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (r.ok) {
+        yanit = r;
+        break;
+      }
+      if (r.status === 429) kotaDolu = true;
+      console.error("Gemini hata", model, r.status, (await r.text().catch(() => "")).slice(0, 300));
+      if (![404, 429, 500, 503].includes(r.status)) break;
+    } catch (e) {
+      console.error("Gemini bağlantı hatası", model, e?.name);
+    }
   }
 
-  if (yanit.status === 429) return hata("Ücretsiz teşhis kotası şu an dolu. Birkaç dakika sonra tekrar dene.", 429);
-  if (!yanit.ok) {
-    console.error("Gemini hata", yanit.status, await yanit.text().catch(() => ""));
-    return hata("Teşhis şu an yapılamıyor. Biraz sonra tekrar dene.", 502);
+  if (!yanit) {
+    return kotaDolu
+      ? hata("Ücretsiz teşhis kotası şu an dolu. Birkaç dakika sonra tekrar dene.", 429)
+      : hata("Teşhis servisi şu an yoğun. Birkaç dakika sonra tekrar dene.", 503);
   }
 
   const govde = await yanit.json();
